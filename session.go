@@ -431,6 +431,7 @@ func (session *Session) CreateClient(name string, wid int) (client Client, err e
 func (session *Session) request(method string, requestURL string, body io.Reader) ([]byte, error) {
 	retryClient := retryablehttp.NewClient()
 	retryClient.RetryMax = 10
+	retryClient.Logger = session.logger
 
 	client := retryClient.StandardClient() // *http.Client
 
@@ -476,7 +477,7 @@ func (session *Session) get(requestURL string, path string, params map[string]st
 		requestURL += "?" + data.Encode()
 	}
 
-	session.logger.Debug("GETing from URL: %s", requestURL)
+	session.logger.Debug("GETing URL", "url", requestURL)
 	return session.request("GET", requestURL, nil)
 }
 
