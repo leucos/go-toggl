@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 
 	"github.com/hashicorp/go-retryablehttp"
@@ -17,34 +19,51 @@ type Session struct {
 	APIToken string
 	username string
 	password string
+	logger   *slog.Logger
 }
 
 // OpenSession opens a session using an existing API token.
 func OpenSession(apiToken string) Session {
-	return Session{APIToken: apiToken}
+	return Session{
+		APIToken: apiToken,
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
 }
 
 // NewSession creates a new session by retrieving a user's API token.
-func NewSession(username, password string) (session Session, err error) {
-	session.username = username
-	session.password = password
+func NewSession(username, password string) (*Session, error) {
+	session := Session{
+		username: username,
+		password: password,
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
 
 	data, err := session.get(TogglAPI, "/me", nil)
 	if err != nil {
-		return session, err
+		return nil, err
 	}
 
 	var account Account
 	err = decodeAccount(data, &account)
 	if err != nil {
-		return session, err
+		return nil, err
 	}
 
 	session.username = ""
 	session.password = ""
 	session.APIToken = account.APIToken
 
-	return session, nil
+	return &session, nil
+}
+
+// DisableLog disables output to stderr
+func (session *Session) DisableLog() {
+	session.logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// EnableLog enables output to stderr
+func (session *Session) EnableLog() {
+	session.logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 }
 
 // GetAccount returns a user's account information, including a list of active
@@ -78,7 +97,7 @@ func (session *Session) GetSummaryReport(workspace int, since, until string) (Su
 	if err != nil {
 		return SummaryReport{}, err
 	}
-	dlog.Printf("Got data: %s", data)
+	session.logger.Debug("got data", "data", data)
 
 	var report SummaryReport
 	err = decodeSummaryReport(data, &report)
@@ -98,7 +117,7 @@ func (session *Session) GetDetailedReport(workspace int, since, until string, pa
 	if err != nil {
 		return DetailedReport{}, err
 	}
-	dlog.Printf("Got data: %s", data)
+	session.logger.Debug("got data", "data", data)
 
 	var report DetailedReport
 	err = decodeDetailedReport(data, &report)
@@ -164,7 +183,7 @@ func (session *Session) GetTimeEntries(startDate, endDate time.Time) ([]TimeEntr
 
 // UpdateTimeEntry changes information about an existing time entry.
 func (session *Session) UpdateTimeEntry(timer TimeEntry) (TimeEntry, error) {
-	dlog.Printf("Updating timer %v", timer)
+	session.logger.Debug("updating timer", "timer", timer)
 	return handleTimeEntryResponse(
 		session.put(TogglAPI, generateResourceURLWithID(timeEntries, timer.Wid, timer.ID), timer),
 	)
@@ -175,7 +194,7 @@ func (session *Session) UpdateTimeEntry(timer TimeEntry) (TimeEntry, error) {
 // In both cases the new entry will have the same description and project ID as
 // the existing one.
 func (session *Session) ContinueTimeEntry(timer TimeEntry, duronly bool) (TimeEntry, error) {
-	dlog.Printf("Continuing timer %v", timer)
+	session.logger.Debug("continuing timer", "timer", timer)
 	if duronly &&
 		time.Now().Local().Format("2006-01-02") == timer.Start.Local().Format("2006-01-02") {
 		// If we're doing a duration-only continuation for a timer today, then basically only unstop the timer
@@ -193,7 +212,7 @@ func (session *Session) ContinueTimeEntry(timer TimeEntry, duronly bool) (TimeEn
 // UnstopTimeEntry starts a new entry that is a copy of the given one, including
 // the given timer's start time. The given time entry is then deleted.
 func (session *Session) UnstopTimeEntry(timer TimeEntry) (TimeEntry, error) {
-	dlog.Printf("Unstopping timer %v", timer)
+	session.logger.Debug("unstopping timer", "timer", timer)
 
 	entry := newStartEntryRequestData(timer.Description, timer.Wid)
 	entry = entry.withMetadataFromTimeEntry(timer)
@@ -213,7 +232,7 @@ func (session *Session) UnstopTimeEntry(timer TimeEntry) (TimeEntry, error) {
 
 // StopTimeEntry stops a running time entry.
 func (session *Session) StopTimeEntry(timer TimeEntry) (TimeEntry, error) {
-	dlog.Printf("Stopping timer %v", timer)
+	session.logger.Debug("stopping timer", "timer", timer)
 	return handleTimeEntryResponse(
 		session.patch(
 			TogglAPI,
@@ -225,12 +244,13 @@ func (session *Session) StopTimeEntry(timer TimeEntry) (TimeEntry, error) {
 // AddRemoveTag adds or removes a tag from the time entry corresponding to a
 // given ID.
 func (session *Session) AddRemoveTag(timeEntryId int, tag string, add bool, wid int) (TimeEntry, error) {
-	dlog.Printf("Adding tag to time entry %v", timeEntryId)
 
 	action := "add"
 	if !add {
 		action = "remove"
 	}
+
+	session.logger.Debug("changing tag in time entry", "action", action, "tag", tag, "timeEntryID", timeEntryId)
 
 	data := map[string]interface{}{
 		"tags":       []string{tag},
@@ -244,13 +264,13 @@ func (session *Session) AddRemoveTag(timeEntryId int, tag string, add bool, wid 
 
 // DeleteTimeEntry deletes a time entry.
 func (session *Session) DeleteTimeEntry(timer TimeEntry) ([]byte, error) {
-	dlog.Printf("Deleting timer %v", timer)
+	session.logger.Debug("deleting timer", "timer", timer)
 	return session.delete(TogglAPI, generateResourceURLWithID(timeEntries, timer.Wid, timer.ID))
 }
 
 // GetProjects allows to query for all projects in a workspace
 func (session *Session) GetProjects(wid int) ([]Project, error) {
-	dlog.Printf("Getting projects for workspace %d", wid)
+	session.logger.Debug("getting projects for workspace", "workspaceID", wid)
 	data, err := session.get(TogglAPI, generateResourceURL(projects, wid), nil)
 	if err != nil {
 		return nil, err
@@ -258,7 +278,6 @@ func (session *Session) GetProjects(wid int) ([]Project, error) {
 
 	var projects []Project
 	err = json.Unmarshal(data, &projects)
-	dlog.Printf("Unmarshaled '%s' into %#v\n", data, projects)
 	if err != nil {
 		return nil, err
 	}
@@ -268,14 +287,13 @@ func (session *Session) GetProjects(wid int) ([]Project, error) {
 
 // GetProject allows to query for all projects in a workspace
 func (session *Session) GetProject(id int, wid int) (project Project, err error) {
-	dlog.Printf("Getting project with id %d", id)
+	session.logger.Debug("getting project", "projectID", id)
 	data, err := session.get(TogglAPI, generateResourceURLWithID(projects, wid, id), nil)
 	if err != nil {
 		return project, err
 	}
 
 	err = json.Unmarshal(data, &project)
-	dlog.Printf("Unmarshaled '%s' into %#v\n", data, project)
 	if err != nil {
 		return project, err
 	}
@@ -285,7 +303,7 @@ func (session *Session) GetProject(id int, wid int) (project Project, err error)
 
 // CreateProject creates a new project.
 func (session *Session) CreateProject(name string, wid int) (project Project, err error) {
-	dlog.Printf("Creating project %s", name)
+	session.logger.Debug("creating project", "projectName", name)
 	data := map[string]interface{}{
 		"name":   name,
 		"wid":    wid,
@@ -298,7 +316,6 @@ func (session *Session) CreateProject(name string, wid int) (project Project, er
 	}
 
 	err = json.Unmarshal(respData, &project)
-	dlog.Printf("Unmarshaled '%s' into %#v\n", respData, project)
 	if err != nil {
 		return project, err
 	}
@@ -308,7 +325,7 @@ func (session *Session) CreateProject(name string, wid int) (project Project, er
 
 // UpdateProject changes information about an existing project.
 func (session *Session) UpdateProject(project Project) (Project, error) {
-	dlog.Printf("Updating project %v", project)
+	session.logger.Debug("updating project", "project", project)
 	respData, err := session.put(
 		TogglAPI,
 		generateResourceURLWithID(projects, project.Wid, project.ID),
@@ -321,7 +338,6 @@ func (session *Session) UpdateProject(project Project) (Project, error) {
 
 	var entry Project
 	err = json.Unmarshal(respData, &entry)
-	dlog.Printf("Unmarshaled '%v' into %#v\n", project, entry)
 	if err != nil {
 		return Project{}, err
 	}
@@ -331,13 +347,13 @@ func (session *Session) UpdateProject(project Project) (Project, error) {
 
 // DeleteProject deletes a project.
 func (session *Session) DeleteProject(project Project) ([]byte, error) {
-	dlog.Printf("Deleting project %v", project)
+	session.logger.Debug("deleting project", "project", project)
 	return session.delete(TogglAPI, generateResourceURLWithID(projects, project.Wid, project.ID))
 }
 
 // CreateTag creates a new tag.
 func (session *Session) CreateTag(name string, wid int) (tag Tag, err error) {
-	dlog.Printf("Creating tag %s", name)
+	session.logger.Debug("Creating tag %s", name)
 	data := map[string]interface{}{
 		"name": name,
 		"wid":  wid,
@@ -349,7 +365,6 @@ func (session *Session) CreateTag(name string, wid int) (tag Tag, err error) {
 	}
 
 	err = json.Unmarshal(respData, &tag)
-	dlog.Printf("Unmarshaled '%s' into %#v\n", respData, tag)
 	if err != nil {
 		return tag, err
 	}
@@ -359,7 +374,7 @@ func (session *Session) CreateTag(name string, wid int) (tag Tag, err error) {
 
 // UpdateTag changes information about an existing tag.
 func (session *Session) UpdateTag(tag Tag) (Tag, error) {
-	dlog.Printf("Updating tag %v", tag)
+	session.logger.Debug("updating tag", "tag", tag)
 	respData, err := session.put(TogglAPI, generateResourceURLWithID(tags, tag.Wid, tag.ID), tag)
 
 	if err != nil {
@@ -368,7 +383,6 @@ func (session *Session) UpdateTag(tag Tag) (Tag, error) {
 
 	var entry Tag
 	err = json.Unmarshal(respData, &entry)
-	dlog.Printf("Unmarshaled '%s' into %#v\n", respData, entry)
 	if err != nil {
 		return Tag{}, err
 	}
@@ -378,13 +392,13 @@ func (session *Session) UpdateTag(tag Tag) (Tag, error) {
 
 // DeleteTag deletes a tag.
 func (session *Session) DeleteTag(tag Tag) ([]byte, error) {
-	dlog.Printf("Deleting tag %v", tag)
+	session.logger.Debug("deleting tag", "tag", tag)
 	return session.delete(TogglAPI, generateResourceURLWithID(tags, tag.Wid, tag.ID))
 }
 
 // GetClients returns a list of clients for the current account
 func (session *Session) GetClients(wid int) (list []Client, err error) {
-	dlog.Println("Retrieving clients")
+	session.logger.Debug("retrieving clients")
 
 	data, err := session.get(TogglAPI, generateResourceURL(clients, wid), nil)
 	if err != nil {
@@ -396,7 +410,7 @@ func (session *Session) GetClients(wid int) (list []Client, err error) {
 
 // CreateClient adds a new client
 func (session *Session) CreateClient(name string, wid int) (client Client, err error) {
-	dlog.Printf("Creating client %s", name)
+	session.logger.Debug("creating client", "clientName", name)
 	data := map[string]interface{}{
 		"name": name,
 		"wid":  wid,
@@ -408,7 +422,6 @@ func (session *Session) CreateClient(name string, wid int) (client Client, err e
 	}
 
 	err = json.Unmarshal(respData, &client)
-	dlog.Printf("Unmarshaled '%s' into %#v\n", respData, client)
 	if err != nil {
 		return client, err
 	}
@@ -463,7 +476,7 @@ func (session *Session) get(requestURL string, path string, params map[string]st
 		requestURL += "?" + data.Encode()
 	}
 
-	dlog.Printf("GETing from URL: %s", requestURL)
+	session.logger.Debug("GETing from URL: %s", requestURL)
 	return session.request("GET", requestURL, nil)
 }
 
@@ -479,8 +492,8 @@ func (session *Session) post(requestURL string, path string, data interface{}) (
 		}
 	}
 
-	dlog.Printf("POSTing to URL: %s", requestURL)
-	dlog.Printf("data: %s", body)
+	session.logger.Debug("POSTing to URL", "url", requestURL)
+	session.logger.Debug("data", "data", body)
 	return session.request("POST", requestURL, bytes.NewBuffer(body))
 }
 
@@ -496,19 +509,19 @@ func (session *Session) put(requestURL string, path string, data interface{}) ([
 		}
 	}
 
-	dlog.Printf("PUTing to URL %s: %s", requestURL, string(body))
+	session.logger.Debug("PUTing URL", "url", requestURL, "body", string(body))
 	return session.request("PUT", requestURL, bytes.NewBuffer(body))
 }
 
 func (session *Session) patch(requestURL string, path string) ([]byte, error) {
 	requestURL += path
-	dlog.Printf("PATCHing to URL %s", requestURL)
+	session.logger.Debug("PATCHing URL", "url", requestURL)
 	return session.request("PATCH", requestURL, nil)
 }
 
 func (session *Session) delete(requestURL string, path string) ([]byte, error) {
 	requestURL += path
-	dlog.Printf("DELETINGing URL: %s", requestURL)
+	session.logger.Debug("DELETEing URL", "url", requestURL)
 	return session.request("DELETE", requestURL, nil)
 }
 

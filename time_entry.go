@@ -109,7 +109,6 @@ func handleTimeEntryResponse(data []byte, err error) (TimeEntry, error) {
 
 	var entry TimeEntry
 	err = json.Unmarshal(data, &entry)
-	dlog.Printf("Unmarshaled '%s' into %#v\n", data, entry)
 	if err != nil {
 		return TimeEntry{}, err
 	}

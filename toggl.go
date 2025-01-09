@@ -8,9 +8,6 @@ package toggl
 import (
 	"bytes"
 	"encoding/json"
-	"io"
-	"log"
-	"os"
 )
 
 // Toggl service constants
@@ -21,8 +18,6 @@ const (
 )
 
 var (
-	dlog = log.New(os.Stderr, "[toggl] ", log.LstdFlags)
-
 	// AppName is the application name used when creating timers.
 	AppName = DefaultAppName
 )
@@ -94,10 +89,6 @@ type DetailedReport struct {
 	Data       []DetailedTimeEntry `json:"data"`
 }
 
-// functions ////////////////////////////
-
-// support /////////////////////////////////////////////////////////////
-
 func decodeAccount(data []byte, account *Account) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	err := dec.Decode(account)
@@ -108,7 +99,6 @@ func decodeAccount(data []byte, account *Account) error {
 }
 
 func decodeSummaryReport(data []byte, report *SummaryReport) error {
-	dlog.Printf("Decoding %s", data)
 	dec := json.NewDecoder(bytes.NewReader(data))
 	err := dec.Decode(&report)
 	if err != nil {
@@ -118,24 +108,10 @@ func decodeSummaryReport(data []byte, report *SummaryReport) error {
 }
 
 func decodeDetailedReport(data []byte, report *DetailedReport) error {
-	dlog.Printf("Decoding %s", data)
 	dec := json.NewDecoder(bytes.NewReader(data))
 	err := dec.Decode(&report)
 	if err != nil {
 		return err
 	}
 	return nil
-}
-
-// DisableLog disables output to stderr
-func DisableLog() {
-	dlog.SetFlags(0)
-	dlog.SetOutput(io.Discard)
-}
-
-// EnableLog enables output to stderr
-func EnableLog() {
-	logFlags := dlog.Flags()
-	dlog.SetFlags(logFlags)
-	dlog.SetOutput(os.Stderr)
 }
