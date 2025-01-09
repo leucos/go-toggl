@@ -1,8 +1,3 @@
-/*
-Package toggl provides an API for interacting with the Toggl time tracking service.
-
-See https://github.com/toggl/toggl_api_docs for more information on Toggl's REST API.
-*/
 package toggl
 
 import (
@@ -10,61 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
-	"os"
 	"time"
+
+	"github.com/hashicorp/go-retryablehttp"
 )
-
-// Toggl service constants
-const (
-	TogglAPI       = "https://api.track.toggl.com/api/v9"
-	ReportsAPI     = "https://api.track.toggl.com/reports/api/v2"
-	DefaultAppName = "go-toggl"
-)
-
-type resourceType int
-
-const (
-	clients resourceType = iota
-	projects
-	tags
-	timeEntries
-)
-
-var resourceTypeMap = map[resourceType]string{
-	clients:     "clients",
-	projects:    "projects",
-	tags:        "tags",
-	timeEntries: "time_entries",
-}
-
-func (r resourceType) String() string {
-	return resourceTypeMap[r]
-}
-
-func generateUserResourceURL(resourceType resourceType) string {
-	return fmt.Sprintf("/me/%s", resourceType)
-}
-
-func generateResourceURL(resourceType resourceType, wid int) string {
-	return fmt.Sprintf("/workspaces/%d/"+resourceType.String(), wid)
-}
-
-func generateResourceURLWithID(resourceType resourceType, wid int, id int) string {
-	return generateResourceURL(resourceType, wid) + fmt.Sprintf("/%d", id)
-}
-
-var (
-	dlog   = log.New(os.Stderr, "[toggl] ", log.LstdFlags)
-	client = &http.Client{}
-
-	// AppName is the application name used when creating timers.
-	AppName = DefaultAppName
-)
-
-// structures ///////////////////////////
 
 // Session represents an active connection to the Toggl REST API.
 type Session struct {
@@ -72,132 +18,6 @@ type Session struct {
 	username string
 	password string
 }
-
-// Account represents a user account.
-type Account struct {
-	APIToken        string      `json:"api_token"`
-	Timezone        string      `json:"timezone"`
-	ID              int         `json:"id"`
-	Workspaces      []Workspace `json:"workspaces"`
-	Clients         []Client    `json:"clients"`
-	Projects        []Project   `json:"projects"`
-	Tasks           []Task      `json:"tasks"`
-	Tags            []Tag       `json:"tags"`
-	TimeEntries     []TimeEntry `json:"time_entries"`
-	BeginningOfWeek int         `json:"beginning_of_week"`
-}
-
-// Workspace represents a user workspace.
-type Workspace struct {
-	ID              int    `json:"id"`
-	RoundingMinutes int    `json:"rounding_minutes"`
-	Rounding        int    `json:"rounding"`
-	Name            string `json:"name"`
-	Premium         bool   `json:"premium"`
-}
-
-// Client represents a client.
-type Client struct {
-	Wid      int    `json:"wid"`
-	ID       int    `json:"id"`
-	Name     string `json:"name"`
-	Archived bool   `json:"archived"`
-	Notes    string `json:"notes"`
-}
-
-// Project represents a project.
-type Project struct {
-	Wid             int        `json:"workspace_id"`
-	ID              int        `json:"id"`
-	Cid             *int       `json:"client_id,omitempty"`
-	Name            string     `json:"name"`
-	Active          bool       `json:"active"`
-	Billable        *bool      `json:"billable,omitempty"`
-	ServerDeletedAt *time.Time `json:"server_deleted_at,omitempty"`
-}
-
-// IsActive indicates whether a project exists and is active
-func (p *Project) IsActive() bool {
-	return p.Active && p.ServerDeletedAt == nil
-}
-
-// Task represents a task.
-type Task struct {
-	Wid  int    `json:"wid"`
-	Pid  int    `json:"pid"`
-	ID   int    `json:"id"`
-	Name string `json:"name"`
-}
-
-// Tag represents a tag.
-type Tag struct {
-	Wid  int    `json:"workspace_id"`
-	ID   int    `json:"id"`
-	Name string `json:"name"`
-}
-
-// TimeEntry represents a single time entry.
-type TimeEntry struct {
-	Wid         int        `json:"workspace_id,omitempty"`
-	ID          int        `json:"id,omitempty"`
-	Pid         *int       `json:"project_id,omitempty"`
-	Tid         *int       `json:"task_id,omitempty"`
-	Description string     `json:"description,omitempty"`
-	Stop        *time.Time `json:"stop,omitempty"`
-	Start       *time.Time `json:"start,omitempty"`
-	Tags        []string   `json:"tags"`
-	Duration    int64      `json:"duration,omitempty"`
-	DurOnly     bool       `json:"duronly"`
-	Billable    bool       `json:"billable"`
-}
-
-type DetailedTimeEntry struct {
-	ID              int        `json:"id"`
-	Pid             int        `json:"pid"`
-	Tid             int        `json:"tid"`
-	Uid             int        `json:"uid"`
-	User            string     `json:"user,omitempty"`
-	Description     string     `json:"description"`
-	Project         string     `json:"project"`
-	ProjectColor    string     `json:"project_color"`
-	ProjectHexColor string     `json:"project_hex_color"`
-	Client          string     `json:"client"`
-	Start           *time.Time `json:"start"`
-	End             *time.Time `json:"end"`
-	Updated         *time.Time `json:"updated"`
-	Duration        int64      `json:"dur"`
-	Billable        bool       `json:"billable"`
-	Tags            []string   `json:"tags"`
-}
-
-// SummaryReport represents a summary report generated by Toggl's reporting API.
-type SummaryReport struct {
-	TotalGrand int `json:"total_grand"`
-	Data       []struct {
-		ID    int `json:"id"`
-		Time  int `json:"time"`
-		Title struct {
-			Project  string `json:"project"`
-			Client   string `json:"client"`
-			Color    string `json:"color"`
-			HexColor string `json:"hex_color"`
-		} `json:"title"`
-		Items []struct {
-			Title map[string]string `json:"title"`
-			Time  int               `json:"time"`
-		} `json:"items"`
-	} `json:"data"`
-}
-
-// DetailedReport represents a summary report generated by Toggl's reporting API.
-type DetailedReport struct {
-	TotalGrand int                 `json:"total_grand"`
-	TotalCount int                 `json:"total_count"`
-	PerPage    int                 `json:"per_page"`
-	Data       []DetailedTimeEntry `json:"data"`
-}
-
-// functions ////////////////////////////
 
 // OpenSession opens a session using an existing API token.
 func OpenSession(apiToken string) Session {
@@ -233,23 +53,20 @@ func (session *Session) GetAccount() (Account, error) {
 	params := map[string]string{"with_related_data": "true"}
 	data, err := session.get(TogglAPI, "/me", params)
 	if err != nil {
-		return Account{}, fmt.Errorf("Error getting session: %v", err)
+		return Account{}, fmt.Errorf("error getting session: %v", err)
 	}
 
 	var account Account
 	err = decodeAccount(data, &account)
 	if err != nil {
-		return Account{}, fmt.Errorf("Error decoding account data: %v", err)
+		return Account{}, fmt.Errorf("error decoding account data: %v", err)
 	}
 
 	return account, nil
 }
 
 // GetSummaryReport retrieves a summary report using Toggle's reporting API.
-func (session *Session) GetSummaryReport(
-	workspace int,
-	since, until string,
-) (SummaryReport, error) {
+func (session *Session) GetSummaryReport(workspace int, since, until string) (SummaryReport, error) {
 	params := map[string]string{
 		"user_agent":   "jc-toggl",
 		"grouping":     "projects",
@@ -269,11 +86,7 @@ func (session *Session) GetSummaryReport(
 }
 
 // GetDetailedReport retrieves a detailed report using Toggle's reporting API.
-func (session *Session) GetDetailedReport(
-	workspace int,
-	since, until string,
-	page int,
-) (DetailedReport, error) {
+func (session *Session) GetDetailedReport(workspace int, since, until string, page int) (DetailedReport, error) {
 	params := map[string]string{
 		"user_agent":   "jc-toggl",
 		"since":        since,
@@ -292,48 +105,6 @@ func (session *Session) GetDetailedReport(
 	return report, err
 }
 
-type timeEntryCreate struct {
-	Billable    bool       `json:"billable"`
-	Description string     `json:"description"`
-	Duration    int        `json:"duration"`
-	ProjectID   *int       `json:"project_id,omitempty"`
-	TaskID      *int       `json:"task_id,omitempty"`
-	Start       *time.Time `json:"start,omitempty"`
-	Stop        *time.Time `json:"stop,omitempty"`
-	Tags        []string   `json:"tags"`
-	WorkspaceId int        `json:"workspace_id"`
-}
-
-func (t timeEntryCreate) MarshalJSON() ([]byte, error) {
-	type Alias timeEntryCreate
-	return json.Marshal(&struct {
-		Alias
-		CreatedWith string `json:"created_with"`
-	}{
-		Alias:       (Alias)(t),
-		CreatedWith: AppName,
-	})
-}
-
-func (t timeEntryCreate) withMetadataFromTimeEntry(timeEntry TimeEntry) timeEntryCreate {
-	t.ProjectID = timeEntry.Pid
-	t.TaskID = timeEntry.Tid
-	t.Tags = timeEntry.Tags
-	t.Billable = timeEntry.Billable
-
-	return t
-}
-
-func newStartEntryRequestData(description string, workspaceId int) timeEntryCreate {
-	now := time.Now()
-	return timeEntryCreate{
-		Duration:    -1,
-		Description: description,
-		Start:       &now,
-		WorkspaceId: workspaceId,
-	}
-}
-
 // startTimeEntry unified way how to start new entries. Eventually it should replace StartTimeEntry and
 // StartTimeEntryForProject functions, which are for time-being kept for compatibility.
 func (session *Session) startTimeEntry(timeEntry timeEntryCreate) (TimeEntry, error) {
@@ -349,12 +120,7 @@ func (session *Session) StartTimeEntry(description string, wid int) (TimeEntry, 
 
 // StartTimeEntryForProject creates a new time entry for a specific project. Note that the 'billable' option is only
 // meaningful for Toggl Pro accounts; it will be ignored for free accounts.
-func (session *Session) StartTimeEntryForProject(
-	description string,
-	wid int,
-	projectID int,
-	billable *bool,
-) (TimeEntry, error) {
+func (session *Session) StartTimeEntryForProject(description string, wid int, projectID int, billable *bool) (TimeEntry, error) {
 	entry := newStartEntryRequestData(description, wid)
 	entry.ProjectID = &projectID
 
@@ -426,19 +192,23 @@ func (session *Session) ContinueTimeEntry(timer TimeEntry, duronly bool) (TimeEn
 
 // UnstopTimeEntry starts a new entry that is a copy of the given one, including
 // the given timer's start time. The given time entry is then deleted.
-func (session *Session) UnstopTimeEntry(timer TimeEntry) (newEntry TimeEntry, err error) {
+func (session *Session) UnstopTimeEntry(timer TimeEntry) (TimeEntry, error) {
 	dlog.Printf("Unstopping timer %v", timer)
 
 	entry := newStartEntryRequestData(timer.Description, timer.Wid)
 	entry = entry.withMetadataFromTimeEntry(timer)
 	entry.Start = timer.Start
 
-	newEntry, err = session.startTimeEntry(entry)
+	newEntry, err := session.startTimeEntry(entry)
+	if err != nil {
+		return TimeEntry{}, err
+	}
 	if _, err = session.DeleteTimeEntry(timer); err != nil {
 		err = fmt.Errorf("old entry not deleted: %v", err)
+		return TimeEntry{}, err
 	}
 
-	return
+	return newEntry, nil
 }
 
 // StopTimeEntry stops a running time entry.
@@ -454,12 +224,7 @@ func (session *Session) StopTimeEntry(timer TimeEntry) (TimeEntry, error) {
 
 // AddRemoveTag adds or removes a tag from the time entry corresponding to a
 // given ID.
-func (session *Session) AddRemoveTag(
-	timeEntryId int,
-	tag string,
-	add bool,
-	wid int,
-) (TimeEntry, error) {
+func (session *Session) AddRemoveTag(timeEntryId int, tag string, add bool, wid int) (TimeEntry, error) {
 	dlog.Printf("Adding tag to time entry %v", timeEntryId)
 
 	action := "add"
@@ -481,11 +246,6 @@ func (session *Session) AddRemoveTag(
 func (session *Session) DeleteTimeEntry(timer TimeEntry) ([]byte, error) {
 	dlog.Printf("Deleting timer %v", timer)
 	return session.delete(TogglAPI, generateResourceURLWithID(timeEntries, timer.Wid, timer.ID))
-}
-
-// IsRunning returns true if the receiver is currently running.
-func (e *TimeEntry) IsRunning() bool {
-	return e.Duration < 0
 }
 
 // GetProjects allows to query for all projects in a workspace
@@ -655,128 +415,16 @@ func (session *Session) CreateClient(name string, wid int) (client Client, err e
 	return client, nil
 }
 
-// Copy returns a copy of a TimeEntry.
-func (e *TimeEntry) Copy() TimeEntry {
-	newEntry := *e
-	newEntry.Tags = make([]string, len(e.Tags))
-	copy(newEntry.Tags, e.Tags)
-	if e.Start != nil {
-		newEntry.Start = &(*e.Start)
-	}
-	if e.Stop != nil {
-		newEntry.Stop = &(*e.Stop)
-	}
-	return newEntry
-}
-
-// StartTime returns the start time of a time entry as a time.Time.
-func (e *TimeEntry) StartTime() time.Time {
-	if e.Start != nil {
-		return *e.Start
-	}
-	return time.Time{}
-}
-
-// StopTime returns the stop time of a time entry as a time.Time.
-func (e *TimeEntry) StopTime() time.Time {
-	if e.Stop != nil {
-		return *e.Stop
-	}
-	return time.Time{}
-}
-
-// HasTag returns true if a time entry contains a given tag.
-func (e *TimeEntry) HasTag(tag string) bool {
-	return indexOfTag(tag, e.Tags) != -1
-}
-
-// AddTag adds a tag to a time entry if the entry doesn't already contain the
-// tag.
-func (e *TimeEntry) AddTag(tag string) {
-	if !e.HasTag(tag) {
-		e.Tags = append(e.Tags, tag)
-	}
-}
-
-// RemoveTag removes a tag from a time entry.
-func (e *TimeEntry) RemoveTag(tag string) {
-	if i := indexOfTag(tag, e.Tags); i != -1 {
-		e.Tags = append(e.Tags[:i], e.Tags[i+1:]...)
-	}
-}
-
-// SetDuration sets a time entry's duration. The duration should be a value in
-// seconds. The stop time will also be updated. Note that the time entry must
-// not be running.
-func (e *TimeEntry) SetDuration(duration int64) error {
-	if e.IsRunning() {
-		return fmt.Errorf("TimeEntry must be stopped")
-	}
-
-	e.Duration = duration
-	newStop := e.Start.Add(time.Duration(duration) * time.Second)
-	e.Stop = &newStop
-
-	return nil
-}
-
-// SetStartTime sets a time entry's start time. If the time entry is stopped,
-// the stop time will also be updated.
-func (e *TimeEntry) SetStartTime(start time.Time, updateEnd bool) {
-	e.Start = &start
-
-	if !e.IsRunning() {
-		if updateEnd {
-			newStop := start.Add(time.Duration(e.Duration) * time.Second)
-			e.Stop = &newStop
-		} else {
-			e.Duration = e.Stop.Unix() - e.Start.Unix()
-		}
-	}
-}
-
-// SetStopTime sets a time entry's stop time. The duration will also be
-// updated. Note that the time entry must not be running.
-func (e *TimeEntry) SetStopTime(stop time.Time) (err error) {
-	if e.IsRunning() {
-		return fmt.Errorf("TimeEntry must be stopped")
-	}
-
-	e.Stop = &stop
-	e.Duration = int64(stop.Sub(*e.Start) / time.Second)
-
-	return nil
-}
-
-func indexOfTag(tag string, tags []string) int {
-	for i, t := range tags {
-		if t == tag {
-			return i
-		}
-	}
-	return -1
-}
-
-// UnmarshalJSON unmarshals a TimeEntry from JSON data, converting timestamp
-// fields to Go Time values.
-func (e *TimeEntry) UnmarshalJSON(b []byte) error {
-	var entry tempTimeEntry
-	err := json.Unmarshal(b, &entry)
-	if err != nil {
-		return err
-	}
-	te, err := entry.asTimeEntry()
-	if err != nil {
-		return err
-	}
-	*e = te
-	return nil
-}
-
-// support /////////////////////////////////////////////////////////////
-
 func (session *Session) request(method string, requestURL string, body io.Reader) ([]byte, error) {
+	retryClient := retryablehttp.NewClient()
+	retryClient.RetryMax = 10
+
+	client := retryClient.StandardClient() // *http.Client
+
 	req, err := http.NewRequest(method, requestURL, body)
+	if err != nil {
+		return nil, err
+	}
 
 	if session.APIToken != "" {
 		req.SetBasicAuth(session.APIToken, "api_token")
@@ -788,27 +436,23 @@ func (session *Session) request(method string, requestURL string, body io.Reader
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("Error making request: %v", err)
+		return nil, fmt.Errorf("error making request: %v", err)
 	}
 	defer resp.Body.Close()
 
 	content, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("Error reading body: %v", err)
+		return nil, fmt.Errorf("error reading body: %v", err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
-		return content, fmt.Errorf("Response error: %s", resp.Status)
+		return content, fmt.Errorf("response error: %s", resp.Status)
 	}
 
 	return content, nil
 }
 
-func (session *Session) get(
-	requestURL string,
-	path string,
-	params map[string]string,
-) ([]byte, error) {
+func (session *Session) get(requestURL string, path string, params map[string]string) ([]byte, error) {
 	requestURL += path
 
 	if params != nil {
@@ -868,111 +512,11 @@ func (session *Session) delete(requestURL string, path string) ([]byte, error) {
 	return session.request("DELETE", requestURL, nil)
 }
 
-func decodeSession(data []byte, session *Session) error {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	err := dec.Decode(session)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func decodeAccount(data []byte, account *Account) error {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	err := dec.Decode(account)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func decodeSummaryReport(data []byte, report *SummaryReport) error {
-	dlog.Printf("Decoding %s", data)
-	dec := json.NewDecoder(bytes.NewReader(data))
-	err := dec.Decode(&report)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func decodeDetailedReport(data []byte, report *DetailedReport) error {
-	dlog.Printf("Decoding %s", data)
-	dec := json.NewDecoder(bytes.NewReader(data))
-	err := dec.Decode(&report)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-// This is an alias for TimeEntry that is used in tempTimeEntry to prevent the
-// unmarshaler from infinitely recursing while unmarshaling.
-type embeddedTimeEntry TimeEntry
-
-// tempTimeEntry is an intermediate type used as for decoding TimeEntries.
-type tempTimeEntry struct {
-	embeddedTimeEntry
-	Stop  string `json:"stop"`
-	Start string `json:"start"`
-}
-
-func (t *tempTimeEntry) asTimeEntry() (entry TimeEntry, err error) {
-	entry = TimeEntry(t.embeddedTimeEntry)
-
-	parseTime := func(s string) (t time.Time, err error) {
-		t, err = time.Parse("2006-01-02T15:04:05Z", s)
-		if err != nil {
-			t, err = time.Parse("2006-01-02T15:04:05-07:00", s)
-		}
-		return
-	}
-
-	if t.Start != "" {
-		var start time.Time
-		start, err = parseTime(t.Start)
-		if err != nil {
-			return
-		}
-		entry.Start = &start
-	}
-
-	if t.Stop != "" {
-		var stop time.Time
-		stop, err = parseTime(t.Stop)
-		if err != nil {
-			return
-		}
-		entry.Stop = &stop
-	}
-
-	return
-}
-
-func handleTimeEntryResponse(data []byte, err error) (TimeEntry, error) {
-	if err != nil {
-		return TimeEntry{}, err
-	}
-
-	var entry TimeEntry
-	err = json.Unmarshal(data, &entry)
-	dlog.Printf("Unmarshaled '%s' into %#v\n", data, entry)
-	if err != nil {
-		return TimeEntry{}, err
-	}
-
-	return entry, nil
-}
-
-// DisableLog disables output to stderr
-func DisableLog() {
-	dlog.SetFlags(0)
-	dlog.SetOutput(io.Discard)
-}
-
-// EnableLog enables output to stderr
-func EnableLog() {
-	logFlags := dlog.Flags()
-	dlog.SetFlags(logFlags)
-	dlog.SetOutput(os.Stderr)
-}
+// func decodeSession(data []byte, session *Session) error {
+// 	dec := json.NewDecoder(bytes.NewReader(data))
+// 	err := dec.Decode(session)
+// 	if err != nil {
+// 		return err
+// 	}
+// 	return nil
+// }
