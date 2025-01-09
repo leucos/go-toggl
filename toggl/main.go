@@ -13,7 +13,7 @@ import (
 	"encoding/json"
 	"os"
 
-	"github.com/jason0x43/go-toggl"
+	"github.com/leucos/go-toggl"
 )
 
 func main() {
@@ -31,5 +31,9 @@ func main() {
 	}
 
 	data, err := json.MarshalIndent(&account, "", "    ")
+	if err != nil {
+		println(err.Error())
+		return
+	}
 	println("account:", string(data))
 }
