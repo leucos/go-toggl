@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-retryablehttp"
+	"github.com/leucos/go-toggl/cache"
+	"github.com/leucos/go-toggl/resource"
 )
 
 // Session represents an active connection to the Toggl REST API.
@@ -20,14 +22,22 @@ type Session struct {
 	username string
 	password string
 	logger   *slog.Logger
+	cache    cache.ResourcesCache
 }
+
+const (
+	DefaultTTL = 5 * time.Minute
+)
 
 // OpenSession opens a session using an existing API token.
 func OpenSession(apiToken string) Session {
-	return Session{
+	s := Session{
 		APIToken: apiToken,
 		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
+
+	s.cache = cache.New(DefaultTTL)
+	return s
 }
 
 // NewSession creates a new session by retrieving a user's API token.
@@ -53,6 +63,8 @@ func NewSession(username, password string) (*Session, error) {
 	session.password = ""
 	session.APIToken = account.APIToken
 
+	session.cache = cache.New(DefaultTTL)
+
 	return &session, nil
 }
 
@@ -61,8 +73,13 @@ func (session *Session) DisableLog() {
 	session.logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// EnableLog enables output to stderr
-func (session *Session) EnableLog() {
+// EnableLog enables output to given logger or NewTextHandler
+func (session *Session) EnableLog(l *slog.Logger) {
+	if l != nil {
+		session.logger = l
+		return
+	}
+
 	session.logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 }
 
@@ -128,7 +145,7 @@ func (session *Session) GetDetailedReport(workspace int, since, until string, pa
 // StartTimeEntryForProject functions, which are for time-being kept for compatibility.
 func (session *Session) startTimeEntry(timeEntry timeEntryCreate) (TimeEntry, error) {
 	return handleTimeEntryResponse(
-		session.post(TogglAPI, generateResourceURL(timeEntries, timeEntry.WorkspaceId), timeEntry),
+		session.post(TogglAPI, resource.GenerateResourceURL(resource.TimeEntries, timeEntry.WorkspaceId), timeEntry),
 	)
 }
 
@@ -153,15 +170,15 @@ func (session *Session) StartTimeEntryForProject(description string, wid int, pr
 // GetCurrentTimeEntry returns the current time entry, that's running
 func (session *Session) GetCurrentTimeEntry() (TimeEntry, error) {
 	return handleTimeEntryResponse(
-		session.get(TogglAPI, generateUserResourceURL(timeEntries)+"/current", nil),
+		session.get(TogglAPI, resource.GenerateUserResourceURL(resource.TimeEntries)+"/current", nil),
 	)
 }
 
-// GetTimeEntries returns a list of time entries
+// Getresource.TimeEntries returns a list of time entries
 func (session *Session) GetTimeEntries(startDate, endDate time.Time) ([]TimeEntry, error) {
 	data, err := session.get(
 		TogglAPI,
-		generateUserResourceURL(timeEntries),
+		resource.GenerateUserResourceURL(resource.TimeEntries),
 		map[string]string{
 			"start_date": startDate.Format(time.RFC3339),
 			"end_date":   endDate.Format(time.RFC3339),
@@ -185,7 +202,7 @@ func (session *Session) GetTimeEntries(startDate, endDate time.Time) ([]TimeEntr
 func (session *Session) UpdateTimeEntry(timer TimeEntry) (TimeEntry, error) {
 	session.logger.Debug("updating timer", "timer", timer)
 	return handleTimeEntryResponse(
-		session.put(TogglAPI, generateResourceURLWithID(timeEntries, timer.Wid, timer.ID), timer),
+		session.put(TogglAPI, resource.GenerateResourceURLWithID(resource.TimeEntries, timer.Wid, timer.ID), timer),
 	)
 }
 
@@ -236,7 +253,7 @@ func (session *Session) StopTimeEntry(timer TimeEntry) (TimeEntry, error) {
 	return handleTimeEntryResponse(
 		session.patch(
 			TogglAPI,
-			generateResourceURLWithID(timeEntries, timer.Wid, timer.ID)+"/stop",
+			resource.GenerateResourceURLWithID(resource.TimeEntries, timer.Wid, timer.ID)+"/stop",
 		),
 	)
 }
@@ -244,7 +261,6 @@ func (session *Session) StopTimeEntry(timer TimeEntry) (TimeEntry, error) {
 // AddRemoveTag adds or removes a tag from the time entry corresponding to a
 // given ID.
 func (session *Session) AddRemoveTag(timeEntryId int, tag string, add bool, wid int) (TimeEntry, error) {
-
 	action := "add"
 	if !add {
 		action = "remove"
@@ -258,37 +274,57 @@ func (session *Session) AddRemoveTag(timeEntryId int, tag string, add bool, wid 
 	}
 
 	return handleTimeEntryResponse(
-		session.put(TogglAPI, generateResourceURLWithID(timeEntries, wid, timeEntryId), data),
+		session.put(TogglAPI, resource.GenerateResourceURLWithID(resource.TimeEntries, wid, timeEntryId), data),
 	)
 }
 
 // DeleteTimeEntry deletes a time entry.
 func (session *Session) DeleteTimeEntry(timer TimeEntry) ([]byte, error) {
 	session.logger.Debug("deleting timer", "timer", timer)
-	return session.delete(TogglAPI, generateResourceURLWithID(timeEntries, timer.Wid, timer.ID))
+	return session.delete(TogglAPI, resource.GenerateResourceURLWithID(resource.TimeEntries, timer.Wid, timer.ID))
 }
 
 // GetProjects allows to query for all projects in a workspace
 func (session *Session) GetProjects(wid int) ([]Project, error) {
 	session.logger.Debug("getting projects for workspace", "workspaceID", wid)
-	data, err := session.get(TogglAPI, generateResourceURL(projects, wid), nil)
+
+	plist := make([]Project, 0)
+
+	// try cache first
+	if pmap, ok := session.cache.GetMap(resource.Projects, wid); ok {
+		// build project list from map
+		for _, pentry := range pmap {
+			plist = append(plist, pentry.(Project))
+		}
+		return plist, nil
+	}
+
+	data, err := session.get(TogglAPI, resource.GenerateResourceURL(resource.Projects, wid), nil)
 	if err != nil {
 		return nil, err
 	}
 
-	var projects []Project
-	err = json.Unmarshal(data, &projects)
+	err = json.Unmarshal(data, &plist)
 	if err != nil {
 		return nil, err
 	}
 
-	return projects, nil
+	for _, p := range plist {
+		session.cache.Set(resource.Projects, wid, p.ID, p)
+	}
+	return plist, nil
 }
 
-// GetProject allows to query for all projects in a workspace
+// GetProject allows to query for a single project in a workspace
 func (session *Session) GetProject(id int, wid int) (project Project, err error) {
 	session.logger.Debug("getting project", "projectID", id)
-	data, err := session.get(TogglAPI, generateResourceURLWithID(projects, wid, id), nil)
+
+	// try cache first
+	if pentry, ok := session.cache.Get(resource.Projects, wid, id); ok {
+		return pentry.(Project), nil
+	}
+
+	data, err := session.get(TogglAPI, resource.GenerateResourceURLWithID(resource.Projects, wid, id), nil)
 	if err != nil {
 		return project, err
 	}
@@ -298,6 +334,7 @@ func (session *Session) GetProject(id int, wid int) (project Project, err error)
 		return project, err
 	}
 
+	session.cache.Set(resource.Projects, wid, id, project)
 	return project, nil
 }
 
@@ -310,7 +347,7 @@ func (session *Session) CreateProject(name string, wid int) (project Project, er
 		"active": true,
 	}
 
-	respData, err := session.post(TogglAPI, generateResourceURL(projects, wid), data)
+	respData, err := session.post(TogglAPI, resource.GenerateResourceURL(resource.Projects, wid), data)
 	if err != nil {
 		return project, err
 	}
@@ -328,7 +365,7 @@ func (session *Session) UpdateProject(project Project) (Project, error) {
 	session.logger.Debug("updating project", "project", project)
 	respData, err := session.put(
 		TogglAPI,
-		generateResourceURLWithID(projects, project.Wid, project.ID),
+		resource.GenerateResourceURLWithID(resource.Projects, project.Wid, project.ID),
 		project,
 	)
 
@@ -348,18 +385,18 @@ func (session *Session) UpdateProject(project Project) (Project, error) {
 // DeleteProject deletes a project.
 func (session *Session) DeleteProject(project Project) ([]byte, error) {
 	session.logger.Debug("deleting project", "project", project)
-	return session.delete(TogglAPI, generateResourceURLWithID(projects, project.Wid, project.ID))
+	return session.delete(TogglAPI, resource.GenerateResourceURLWithID(resource.Projects, project.Wid, project.ID))
 }
 
 // CreateTag creates a new tag.
 func (session *Session) CreateTag(name string, wid int) (tag Tag, err error) {
-	session.logger.Debug("Creating tag %s", name)
+	session.logger.Debug("creating tag", "tagName", name)
 	data := map[string]interface{}{
 		"name": name,
 		"wid":  wid,
 	}
 
-	respData, err := session.post(TogglAPI, generateResourceURL(tags, wid), data)
+	respData, err := session.post(TogglAPI, resource.GenerateResourceURL(resource.Tags, wid), data)
 	if err != nil {
 		return tag, err
 	}
@@ -375,7 +412,7 @@ func (session *Session) CreateTag(name string, wid int) (tag Tag, err error) {
 // UpdateTag changes information about an existing tag.
 func (session *Session) UpdateTag(tag Tag) (Tag, error) {
 	session.logger.Debug("updating tag", "tag", tag)
-	respData, err := session.put(TogglAPI, generateResourceURLWithID(tags, tag.Wid, tag.ID), tag)
+	respData, err := session.put(TogglAPI, resource.GenerateResourceURLWithID(resource.Tags, tag.Wid, tag.ID), tag)
 
 	if err != nil {
 		return Tag{}, err
@@ -393,14 +430,14 @@ func (session *Session) UpdateTag(tag Tag) (Tag, error) {
 // DeleteTag deletes a tag.
 func (session *Session) DeleteTag(tag Tag) ([]byte, error) {
 	session.logger.Debug("deleting tag", "tag", tag)
-	return session.delete(TogglAPI, generateResourceURLWithID(tags, tag.Wid, tag.ID))
+	return session.delete(TogglAPI, resource.GenerateResourceURLWithID(resource.Tags, tag.Wid, tag.ID))
 }
 
 // GetClients returns a list of clients for the current account
 func (session *Session) GetClients(wid int) (list []Client, err error) {
 	session.logger.Debug("retrieving clients")
 
-	data, err := session.get(TogglAPI, generateResourceURL(clients, wid), nil)
+	data, err := session.get(TogglAPI, resource.GenerateResourceURL(resource.Clients, wid), nil)
 	if err != nil {
 		return list, err
 	}
@@ -416,7 +453,7 @@ func (session *Session) CreateClient(name string, wid int) (client Client, err e
 		"wid":  wid,
 	}
 
-	respData, err := session.post(TogglAPI, generateResourceURL(clients, wid), data)
+	respData, err := session.post(TogglAPI, resource.GenerateResourceURL(resource.Clients, wid), data)
 	if err != nil {
 		return client, err
 	}
@@ -534,3 +571,12 @@ func (session *Session) delete(requestURL string, path string) ([]byte, error) {
 // 	}
 // 	return nil
 // }
+
+// ShowStats prints stats for all resource types
+func (s *Session) ShowStats(wid int) {
+	for rt := range resource.TypeMap {
+		size, hits, misses := s.cache.Stats(rt)
+		m, _ := s.cache.GetMap(rt, wid)
+		s.logger.Debug("resource stats", "resource", rt, "workspaces", size, "hits", hits, "misses", misses, "workspace", wid, "size", len(m))
+	}
+}

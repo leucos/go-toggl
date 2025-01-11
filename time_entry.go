@@ -206,7 +206,7 @@ func (e *TimeEntry) RemoveTag(tag string) {
 // not be running.
 func (e *TimeEntry) SetDuration(duration int64) error {
 	if e.IsRunning() {
-		return fmt.Errorf("TimeEntry must be stopped")
+		return fmt.Errorf("time entry %d must be stopped to be rounded", e.ID)
 	}
 
 	e.Duration = duration
